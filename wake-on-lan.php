@@ -216,6 +216,8 @@ function endWithJsonResponse($responseData) {
 // Init locale variables
 $MESSAGE = false;     // false -> all is fine, string -> error message
 $DEBUGINFO = [];         // Array of strings containing debug information
+$SERVERFILENAME = './hosts.json'; 
+$PINGTYPE = "exec"; //OR: fsockopen
 
 
 // Get the url parameters
@@ -226,26 +228,68 @@ $IP          = isset($_GET['ip'])      ? $_GET['ip']      : '';
 $CIDR        = isset($_GET['cidr'])    ? $_GET['cidr']    : '';
 $PORT        = isset($_GET['port'])    ? $_GET['port']    : '';
 $COMMENT     = isset($_GET['comment']) ? $_GET['comment'] : '';
+$DATA    	 = isset($_GET['data'])    ? $_GET['data']    : '';
 
 
 // Is it a "Get host state" request?
 if('info'===$OP && '' != $IP) {
 
- $responseData = [ 'error' => false, 'isUp' => false ];
+	$responseData = [ 'error' => false, 'isUp' => false ];
+	$waitTimeoutInSeconds = 3;
 
- $errStr = false;
- $errCode = 0;
- $waitTimeoutInSeconds = 3; 
- if($fp = @fsockopen($IP,3389,$errCode,$errStr,$waitTimeoutInSeconds)){   
-	  fclose($fp);
-  	$responseData['isUp'] = true;
-	} else {
-	$responseData['isUp'] = false;
-	$responseData['errCode'] = $errCode;
-	$responseData['errStr'] = $errStr;
- } 
+	switch ($PINGTYPE){
+		case "exec":
+		$host = escapeshellcmd(filter_var($IP, FILTER_VALIDATE_IP));
+		// Exec string for Windows-based systems.
+		if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+			$exec_string = 'ping -n 1 -w ' . ($waitTimeoutInSeconds * 1000) . ' ' . $host;
+			}
+			// Exec string for Darwin based systems (OS X).
+			else if(strtoupper(PHP_OS) === 'DARWIN') {
+			$exec_string = 'ping -n -c 1 -t ' . $waitTimeoutInSeconds . ' ' . $host;
+			}
+			// Exec string for other UNIX-based systems (Linux).
+			else {
+			$exec_string = 'ping -n -c 1 -W ' . $waitTimeoutInSeconds . ' ' . $host . ' 2>&1';
+			}
+		
+			exec($exec_string, $output, $return);
 
- return endWithJsonResponse($responseData);
+			$output =  array_values(array_filter($output));
+			if (!empty($output[1])) {
+				// Search for a 'time' value in the result line.
+				$response = preg_match("/time|Zeit(?:=|<)(?<time>[\.0-9]+)(?:|\s)ms/", $output[1], $matches);
+				// If there's a result and it's greater than 0, return the latency.
+				if ($response > 0 && isset($matches['time'])) {
+					$responseData['isUp'] = true;
+				}else{
+					$responseData['isUp'] = false;
+					$responseData['errCode'] = 0;
+					$responseData['errStr'] = "";
+				}
+			}else{
+				$responseData['isUp'] = false;
+				$responseData['errCode'] = 0;
+				$responseData['errStr'] = "ping command failed";
+			}
+		break;
+
+		default:
+		case "fsockopen":
+			$errStr = false;
+			$errCode = 0;
+			if($fp = @fsockopen($IP,3389,$errCode,$errStr,$waitTimeoutInSeconds)){   
+				fclose($fp);
+				$responseData['isUp'] = true;
+			} else {
+				$responseData['isUp'] = false;
+				$responseData['errCode'] = $errCode;
+				$responseData['errStr'] = $errStr;
+			} 
+		break;
+	}
+
+	return endWithJsonResponse($responseData);
 }
 
 // Try to send the magic packet if at least a mac address and ip address was supplied
@@ -277,6 +321,23 @@ if(''!==$MAC && '' != $IP) {
   // Keep the message or make it an empty string
   if(!$MESSAGE) $MESSAGE = 'Magic packet has been sent for <strong>' . $MAC. '</strong>. Please wait for the host to come up...';
 }
+
+
+
+// save entries to local json file
+if('save'===$OP && ''!==$DATA) {
+	$responseData = [ 'error' => false, 'data' => '' ];
+
+	if(file_put_contents($SERVERFILENAME, $DATA) === FALSE){
+		$responseData['error'] = 'file "hosts.json" could not be written';
+	}else{
+		$responseData['data'] = 'host info has been saved to "hosts.json"';
+	}
+	
+	fclose($fp);
+	return endWithJsonResponse($responseData);
+}
+
 
 // Keep the message or make it an empty string
 if(!$MESSAGE) $MESSAGE = '';
@@ -377,8 +438,7 @@ if(!$MESSAGE) $MESSAGE = '';
 							<th data-lang-ckey="cidr">subnet size (CIDR)</th>
 							<th data-lang-ckey="port">port</th>
 							<th data-lang-ckey="comment">comment</th>
-							<th><button class="btn btn-xs btn-block btn-default" type="button" data-toggle="modal" data-target="#exportModal" data-lang-ckey="export">export...</button></th>
-							<th><button class="btn btn-xs btn-block btn-default" type="button" data-toggle="modal" data-target="#importModal" data-lang-ckey="import">import...</button></th>
+							<th colspan="2"><th><button id="saveToServer" class="btn btn-xs btn-block btn-default" type="button" data-lang-ckey="savetoserver">save to server...</button></th></th>
 						</tr>
 					</thead>
 					
@@ -389,7 +449,7 @@ if(!$MESSAGE) $MESSAGE = '';
 	  					<td>&nbsp;</td>
 							<td><input class="form-control" id="mac" placeholder="00:00:00:00:00:00" value=""></td>
 							<td><input class="form-control" id="ip" placeholder="192.168.0.123" value=""></td>
-							<td><input class="form-control" id="cidr" placeholder="24" value=""></td>
+							<td><input class="form-control" id="cidr" placeholder="24" value="24"></td>
 							<td><input class="form-control" id="port" placeholder="9" value="9"></td>
 							<td><input class="form-control" id="comment" placeholder="my notebook" value="" data-lang-pkey="tpl-comment"></td>
 							<td class="align-middle"><!-- button id="wakeItem" class="btn btn-sm btn-block btn-warning" type="button">Wake up!</button --></td>
@@ -575,6 +635,34 @@ $(function () { 'use strict'
 		$('#exportData').val(json);
 	}
 
+	function saveTableToServerStorage() {
+		var 
+		    items = $('#items tbody tr').map(function() { return $(this).data('wol'); }).get()
+			, json = JSON.stringify(items)
+			, url = '?op=save'
+			  ;
+
+		$.ajax({
+		url: url,
+		type: 'GET',
+		data: { op:'save', data: json},
+		beforeSend: function(/* xhr */) { 
+				},
+		success:  function(resp) {
+			if('string' === typeof resp) { resp = { error: resp }; }
+			if(resp && resp.error && resp.error !== '') {
+							return pageNotify(resp.error, 'danger', true, 10000);
+			}
+						pageNotify(resp.data, 'success', true, 10000);          
+			},
+		error: function(jqXHR, textStatus, errorThrown ) {
+					pageNotify('Error ' + jqXHR.status + ' calling "GET ' + url + '":' + jqXHR.statusText, 'danger', true, 10000);
+			},
+		complete: function(result) { 
+				}
+		});
+	}
+
   var lastUpdateIndex = 1;
   function updateHostInfo() {
 		console.log()
@@ -644,7 +732,8 @@ $(function () { 'use strict'
 					'wakeup': 'Aufwecken!',
 					'remove': 'Entfernen',
 					'tpl-comment': 'Mein Notebook',
-					'add': 'Hinzufügen'
+					'add': 'Hinzufügen',
+					'savetoserver': "Auf dem Server speichern..."
         },
         'en-US': {
 					'wake-on-lan': 'Wake On LAN',
@@ -658,18 +747,24 @@ $(function () { 'use strict'
 					'wakeup': 'Wake Up!',
 					'remove': 'Remove',
 					'tpl-comment': 'my notebook',
-					'add': 'Add'
+					'add': 'Add',
+					'savetoserver': 'save to server...'
         }
       }
   });
 
   $.fn.miniI18n('en-US');
 
+  $('#saveToServer').on('click', function(event) {
+		event.preventDefault();
+		saveTableToServerStorage();
+		return false;
+	});
 
   $('#addItem').on('click', function(event) {
 		event.preventDefault();
-    addItemToTable($('#mac').val(), $('#ip').val(), $('#cidr').val(), $('#port').val(), $('#comment').val());
-    saveTableToLocalStorage();
+    	addItemToTable($('#mac').val(), $('#ip').val(), $('#cidr').val(), $('#port').val(), $('#comment').val());
+    	saveTableToLocalStorage();
 		return false;
 	});
 
@@ -721,7 +816,7 @@ $(function () { 'use strict'
 
 
 	  //Helper function to keep table row from collapsing when being sorted
-		var fixHelperModified = function(e, tr) {
+	var fixHelperModified = function(e, tr) {
 		var $originals = tr.children();
 		var $helper = tr.clone();
 		$helper.children().each(function(index) {
@@ -748,14 +843,23 @@ $(function () { 'use strict'
 
   var 
 	    STORAGE_ITEMNAME = 'wolItems'
-		, msg = '<?php echo $MESSAGE; ?>';
-			;
+		, msg = '<?php echo $MESSAGE; ?>'
+		, SERVER_DATA = '';
+	
+	<?php
+		if(is_file($SERVERFILENAME)){
+			$json = file_get_contents($SERVERFILENAME);
+			echo sprintf('var SERVER_DATA = \'%s\';', $json);
+		}
+	?>
 
   if('' !== msg) pageNotify(msg, (msg.startsWith('Error') ? 'danger' : 'warning'), true, 10000);
 
   if(!localStorage) {
     pageNotify('<strong>Warning!</strong> Your browser does not support local storage. Changes to the list will be lost when closing the browser. You can use the export button to save the configuration string off your web browser.', 'warning', true, 10000);
-	} else {
+	} else if(SERVER_DATA){
+		loadTable(SERVER_DATA);
+	}else{
 		loadTable(localStorage.getItem(STORAGE_ITEMNAME));
 	}
 
